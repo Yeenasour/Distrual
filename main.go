@@ -1,66 +1,127 @@
 package main
 
 import (
-	//"fmt"
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
-	"log"
-	//"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	//"time"
 )
 
 type Child struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
+	id             int
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         io.ReadCloser
+	stderr         *bytes.Buffer
+	killedByParent bool
+}
+
+type ChildExit struct {
+	id  int
+	err error
 }
 
 type Hub struct {
-	children []*Child
+	children map[int]*Child
+	exitChan chan ChildExit
 }
 
 func HubInit() *Hub {
 	hub := Hub{
-		children: []*Child{},
+		children: make(map[int]*Child),
+		exitChan: make(chan ChildExit),
 	}
 	return &hub
 }
 
 func (h *Hub) AddChild(c *Child) {
-	h.children = append(h.children, c)
+	for i := 0; i < 20; i++ {
+		if _, exists := h.children[i]; !exists {
+			c.id = i
+			h.children[i] = c
+			return
+		}
+	}
 }
 
-func StartChild(program string, args ...string) (*Child, error) {
+func (h *Hub) StartChild(program string, args ...string) error {
+
+	if len(h.children) >= 20 {
+		return fmt.Errorf("Child limit (20) reached")
+	}
+
 	cmd := exec.Command(program, args...)
 
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 
+	stderr := &bytes.Buffer{}
+	cmd.Stderr = stderr
+
 	if err := cmd.Start(); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("exec failed: %w", err)
 	}
 
-	return &Child{
-		cmd,
-		stdin,
-		stdout,
-	}, nil
+	c := Child{
+		id:             -1, // Assigned by hub in AddChild
+		cmd:            cmd,
+		stdin:          stdin,
+		stdout:         stdout,
+		stderr:         stderr,
+		killedByParent: false,
+	}
+
+	h.AddChild(&c)
+
+	go c.ScanStdout()
+	go h.Wait(&c)
+
+	return nil
 }
 
-func (c *Child) attachScanner() {
+func (h *Hub) RemoveChild(childID int) error {
+	c, exists := h.children[childID]
+	if !exists {
+		fmt.Printf("No child with ID %d exists", childID)
+		return nil
+	}
+	c.Kill()
+	delete(h.children, childID)
+	return nil
+}
+
+func (c *Child) ScanStdout() { // Will need refactor to pass output to parent through a channel
 	scanner := bufio.NewScanner(c.stdout)
 	for scanner.Scan() {
 		fmt.Println(scanner.Text())
 	}
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Child stdout error:", err)
+}
+
+func (h *Hub) Wait(c *Child) {
+	err := c.cmd.Wait()
+	if !c.killedByParent {
+		if err != nil && c.stderr.Len() > 0 {
+			err = fmt.Errorf(c.stderr.String())
+		}
+	} else {
+		err = nil
 	}
-	fmt.Printf("Hello")
+	h.exitChan <- ChildExit{
+		c.id,
+		err,
+	}
+}
+
+func (c *Child) Kill() {
+	if c.cmd.Process == nil {
+		return
+	}
+	c.killedByParent = true
+	c.cmd.Process.Kill()
 }
 
 func (h *Hub) CmdLine() {
@@ -82,30 +143,72 @@ loop:
 			}
 			from, _ := strconv.Atoi(command[1])
 			to, _ := strconv.Atoi(command[2])
-			if (from < 0 || from >= len(h.children)) || (to < 0 || to >= len(h.children)) {
-				fmt.Println("Argument \"from\" or \"to\" outside valid ID-range")
+			if !h.IsValidChildID(from) || !h.IsValidChildID(to) {
+				fmt.Println("Argument \"from\" or \"to\" outside valid range")
+				continue
 			}
 			fmt.Fprintf(h.children[from].stdin, "ExampleRPC to %d\n", to)
+		case "create":
+			if clen < 2 {
+				fmt.Println("Must provide at least a binary to run")
+				continue
+			}
+			fmt.Printf("Executable: %s - ", command[1])
+			fmt.Printf("Arguments: ")
+			for _, arg := range command[2:] {
+				fmt.Printf("%s ", arg)
+			}
+			fmt.Printf("\n")
+			err := h.StartChild(command[1], command[2:]...)
+			if err != nil {
+				fmt.Printf("Failed to start process, %s\n", err)
+			}
+		case "kill":
+			if clen != 2 {
+				fmt.Println("Wrong number of arguments")
+				continue
+			}
+			childID, _ := strconv.Atoi(command[1])
+			h.RemoveChild(childID)
+		case "list":
+			str := ""
+			for k := range h.children {
+				str += strconv.Itoa(k) + " "
+			}
+			str += "\n"
+			fmt.Println(str)
 		case "exit":
+			h.ReapChildren()
 			break loop
 		}
 	}
 }
 
-func main() {
-	//fs := http.FileServer(http.Dir("./static"))
-	//http.Handle("/", fs)
+func (h *Hub) IsValidChildID(id int) bool {
+	_, exists := h.children[id]
+	return exists
+}
 
-	//go http.ListenAndServe(":8080", nil)
+func (h *Hub) ReapChildren() {
+	for _, child := range h.children {
+		child.cmd.Process.Kill()
+	}
+}
+
+func main() {
 
 	hub := HubInit()
 
-	child1, _ := StartChild("programs/test.exe", "1234")
-	child2, _ := StartChild("programs/test.exe", "1235")
-	go child1.attachScanner()
-	go child2.attachScanner()
-	hub.AddChild(child1)
-	hub.AddChild(child2)
+	go func() {
+		for exit := range hub.exitChan {
+			if exit.err != nil {
+				fmt.Printf("Child %d exited abnormally: %s\n", exit.id, exit.err.Error())
+				delete(hub.children, exit.id)
+			} else {
+				fmt.Printf("Child %d exited normally\n", exit.id)
+			}
+		}
+	}()
 
 	hub.CmdLine()
 }
