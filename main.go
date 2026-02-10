@@ -208,6 +208,7 @@ func main() {
 				delete(hub.children, exit.id)
 			} else {
 				fmt.Printf("Child %d exited normally\n", exit.id)
+				// In case the child-process exits normally by itself.
 				delete(hub.children, exit.id)
 			}
 		}

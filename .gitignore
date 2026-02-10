@@ -1,3 +1,5 @@
 *.exe
+/programs/*
+!/programs/*.go
 
 todo.md
