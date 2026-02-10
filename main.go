@@ -48,6 +48,8 @@ func (h *Hub) AddChild(c *Child) {
 	}
 }
 
+// Probably want to sanitize the path by forcing non-PATH executables from being executed on linux
+// Force explicit paths
 func (h *Hub) StartChild(program string, args ...string) error {
 
 	if len(h.children) >= 20 {
@@ -206,6 +208,7 @@ func main() {
 				delete(hub.children, exit.id)
 			} else {
 				fmt.Printf("Child %d exited normally\n", exit.id)
+				delete(hub.children, exit.id)
 			}
 		}
 	}()
