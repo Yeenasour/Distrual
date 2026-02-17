@@ -29,12 +29,8 @@ func (n *Node) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("Wrong number of arguments")
-	}
-	//fmt.Println("Started program")
 	node := Node{}
-	node.server(os.Args[1])
+	node.server()
 	go node.readCommands()
 	for {
 		time.Sleep(time.Millisecond * 1000)
@@ -42,25 +38,23 @@ func main() {
 }
 
 func (n *Node) readCommands() {
-	writer := bufio.NewWriter(os.Stdout)
-	defer writer.Flush()
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
-		fmt.Fprintf(writer, "Called with command %s\n", input)
-		writer.Flush()
+		fmt.Printf("Called with command %s\n", input)
 	}
 }
 
-func (n *Node) server(adress string) {
+func (n *Node) server() {
 	rpc.Register(n)
 	rpc.HandleHTTP()
-	l, err := net.Listen("tcp", ":"+adress)
+	l, err := net.Listen("tcp", ":0")
 	if err != nil {
 		log.Fatal("listen error:", err)
 	}
+	log.Printf("Listening on %s\n", l.Addr().String())
 	go http.Serve(l, nil)
 }

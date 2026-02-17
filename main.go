@@ -2,22 +2,22 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Child struct {
-	id             int
-	cmd            *exec.Cmd
-	stdin          io.WriteCloser
-	stdout         io.ReadCloser
-	stderr         *bytes.Buffer
-	killedByParent bool
+	id     int
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	stderr io.ReadCloser
+	wg     sync.WaitGroup
 }
 
 type ChildExit struct {
@@ -27,13 +27,11 @@ type ChildExit struct {
 
 type Hub struct {
 	children map[int]*Child
-	exitChan chan ChildExit
 }
 
 func HubInit() *Hub {
 	hub := Hub{
 		children: make(map[int]*Child),
-		exitChan: make(chan ChildExit),
 	}
 	return &hub
 }
@@ -60,26 +58,25 @@ func (h *Hub) StartChild(program string, args ...string) error {
 
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
-
-	stderr := &bytes.Buffer{}
-	cmd.Stderr = stderr
+	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}
 
 	c := Child{
-		id:             -1, // Assigned by hub in AddChild
-		cmd:            cmd,
-		stdin:          stdin,
-		stdout:         stdout,
-		stderr:         stderr,
-		killedByParent: false,
+		id:     -1, // Assigned by hub in AddChild
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
 	}
 
 	h.AddChild(&c)
 
-	go c.ScanStdout()
+	c.wg.Add(2)
+	go c.ScanPipe(c.stdout)
+	go c.ScanPipe(c.stderr)
 	go h.Wait(&c)
 
 	return nil
@@ -92,37 +89,35 @@ func (h *Hub) RemoveChild(childID int) error {
 		return nil
 	}
 	c.Kill()
-	delete(h.children, childID)
 	return nil
 }
 
-func (c *Child) ScanStdout() { // Will need refactor to pass output to parent through a channel
-	scanner := bufio.NewScanner(c.stdout)
+func (c *Child) ScanPipe(pipe io.ReadCloser) { // Will need refactor to pass output to parent through a channel
+	defer c.wg.Done()
+	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
 		fmt.Println(scanner.Text())
 	}
 }
 
 func (h *Hub) Wait(c *Child) {
+	ID := c.id
 	err := c.cmd.Wait()
-	if !c.killedByParent {
-		if err != nil && c.stderr.Len() > 0 {
-			err = fmt.Errorf(c.stderr.String())
-		}
+	c.wg.Wait()
+
+	if err != nil {
+		fmt.Printf("Child %d exited abnormally: %v\n", ID, err)
 	} else {
-		err = nil
+		fmt.Printf("Child %d exited normally\n", ID)
 	}
-	h.exitChan <- ChildExit{
-		c.id,
-		err,
-	}
+
+	delete(h.children, ID)
 }
 
 func (c *Child) Kill() {
 	if c.cmd.Process == nil {
 		return
 	}
-	c.killedByParent = true
 	c.cmd.Process.Kill()
 }
 
@@ -198,21 +193,6 @@ func (h *Hub) ReapChildren() {
 }
 
 func main() {
-
 	hub := HubInit()
-
-	go func() {
-		for exit := range hub.exitChan {
-			if exit.err != nil {
-				fmt.Printf("Child %d exited abnormally: %s\n", exit.id, exit.err.Error())
-				delete(hub.children, exit.id)
-			} else {
-				fmt.Printf("Child %d exited normally\n", exit.id)
-				// In case the child-process exits normally by itself.
-				delete(hub.children, exit.id)
-			}
-		}
-	}()
-
 	hub.CmdLine()
 }
