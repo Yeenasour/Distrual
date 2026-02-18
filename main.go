@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-type Child struct {
+type Node struct {
 	id     int
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -20,27 +20,22 @@ type Child struct {
 	wg     sync.WaitGroup
 }
 
-type ChildExit struct {
-	id  int
-	err error
-}
-
 type Hub struct {
-	children map[int]*Child
+	nodes map[int]*Node
 }
 
 func HubInit() *Hub {
 	hub := Hub{
-		children: make(map[int]*Child),
+		nodes: make(map[int]*Node),
 	}
 	return &hub
 }
 
-func (h *Hub) AddChild(c *Child) {
+func (h *Hub) AddNode(n *Node) {
 	for i := 0; i < 20; i++ {
-		if _, exists := h.children[i]; !exists {
-			c.id = i
-			h.children[i] = c
+		if _, exists := h.nodes[i]; !exists {
+			n.id = i
+			h.nodes[i] = n
 			return
 		}
 	}
@@ -48,10 +43,10 @@ func (h *Hub) AddChild(c *Child) {
 
 // Probably want to sanitize the path by forcing non-PATH executables from being executed on linux
 // Force explicit paths
-func (h *Hub) StartChild(program string, args ...string) error {
+func (h *Hub) StartNode(program string, args ...string) error {
 
-	if len(h.children) >= 20 {
-		return fmt.Errorf("Child limit (20) reached")
+	if len(h.nodes) >= 20 {
+		return fmt.Errorf("Node limit (20) reached")
 	}
 
 	cmd := exec.Command(program, args...)
@@ -64,61 +59,61 @@ func (h *Hub) StartChild(program string, args ...string) error {
 		return fmt.Errorf("exec failed: %w", err)
 	}
 
-	c := Child{
-		id:     -1, // Assigned by hub in AddChild
+	n := Node{
+		id:     -1, // Assigned by hub in AddNode
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: stdout,
 		stderr: stderr,
 	}
 
-	h.AddChild(&c)
+	h.AddNode(&n)
 
-	c.wg.Add(2)
-	go c.ScanPipe(c.stdout)
-	go c.ScanPipe(c.stderr)
-	go h.Wait(&c)
+	n.wg.Add(2)
+	go n.ScanPipe(n.stdout)
+	go n.ScanPipe(n.stderr)
+	go h.Wait(&n)
 
 	return nil
 }
 
-func (h *Hub) RemoveChild(childID int) error {
-	c, exists := h.children[childID]
+func (h *Hub) RemoveNode(nodeID int) error {
+	n, exists := h.nodes[nodeID]
 	if !exists {
-		fmt.Printf("No child with ID %d exists", childID)
+		fmt.Printf("No node with ID %d exists", nodeID)
 		return nil
 	}
-	c.Kill()
+	n.Kill()
 	return nil
 }
 
-func (c *Child) ScanPipe(pipe io.ReadCloser) { // Will need refactor to pass output to parent through a channel
-	defer c.wg.Done()
+func (n *Node) ScanPipe(pipe io.ReadCloser) { // Will need refactor to pass output to parent through a channel
+	defer n.wg.Done()
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
 		fmt.Println(scanner.Text())
 	}
 }
 
-func (h *Hub) Wait(c *Child) {
-	ID := c.id
-	err := c.cmd.Wait()
-	c.wg.Wait()
+func (h *Hub) Wait(n *Node) {
+	ID := n.id
+	err := n.cmd.Wait()
+	n.wg.Wait()
 
 	if err != nil {
-		fmt.Printf("Child %d exited abnormally: %v\n", ID, err)
+		fmt.Printf("Node %d exited abnormally: %v\n", ID, err)
 	} else {
-		fmt.Printf("Child %d exited normally\n", ID)
+		fmt.Printf("Node %d exited normally\n", ID)
 	}
 
-	delete(h.children, ID)
+	delete(h.nodes, ID)
 }
 
-func (c *Child) Kill() {
-	if c.cmd.Process == nil {
+func (n *Node) Kill() {
+	if n.cmd.Process == nil {
 		return
 	}
-	c.cmd.Process.Kill()
+	n.cmd.Process.Kill()
 }
 
 func (h *Hub) CmdLine() {
@@ -140,11 +135,11 @@ loop:
 			}
 			from, _ := strconv.Atoi(command[1])
 			to, _ := strconv.Atoi(command[2])
-			if !h.IsValidChildID(from) || !h.IsValidChildID(to) {
+			if !h.IsValidNodeID(from) || !h.IsValidNodeID(to) {
 				fmt.Println("Argument \"from\" or \"to\" outside valid range")
 				continue
 			}
-			fmt.Fprintf(h.children[from].stdin, "ExampleRPC to %d\n", to)
+			fmt.Fprintf(h.nodes[from].stdin, "ExampleRPC to %d\n", to)
 		case "create":
 			if clen < 2 {
 				fmt.Println("Must provide at least a binary to run")
@@ -156,7 +151,7 @@ loop:
 				fmt.Printf("%s ", arg)
 			}
 			fmt.Printf("\n")
-			err := h.StartChild(command[1], command[2:]...)
+			err := h.StartNode(command[1], command[2:]...)
 			if err != nil {
 				fmt.Printf("Failed to start process, %s\n", err)
 			}
@@ -165,30 +160,30 @@ loop:
 				fmt.Println("Wrong number of arguments")
 				continue
 			}
-			childID, _ := strconv.Atoi(command[1])
-			h.RemoveChild(childID)
+			nodeID, _ := strconv.Atoi(command[1])
+			h.RemoveNode(nodeID)
 		case "list":
 			str := ""
-			for k := range h.children {
+			for k := range h.nodes {
 				str += strconv.Itoa(k) + " "
 			}
 			str += "\n"
 			fmt.Println(str)
 		case "exit":
-			h.ReapChildren()
+			h.ReapNodes()
 			break loop
 		}
 	}
 }
 
-func (h *Hub) IsValidChildID(id int) bool {
-	_, exists := h.children[id]
+func (h *Hub) IsValidNodeID(id int) bool {
+	_, exists := h.nodes[id]
 	return exists
 }
 
-func (h *Hub) ReapChildren() {
-	for _, child := range h.children {
-		child.cmd.Process.Kill()
+func (h *Hub) ReapNodes() {
+	for _, node := range h.nodes {
+		node.cmd.Process.Kill()
 	}
 }
 
