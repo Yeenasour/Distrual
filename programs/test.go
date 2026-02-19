@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/yeenasour/distrual/util/msg"
 	"log"
 	"net"
 	"net/http"
@@ -55,6 +56,10 @@ func (n *Node) server() {
 	if err != nil {
 		log.Fatal("listen error:", err)
 	}
-	log.Printf("Listening on %s\n", l.Addr().String())
+	m := msg.Message{
+		Type:    msg.Init,
+		Payload: l.Addr().String(),
+	}
+	msg.WriteMessage(m)
 	go http.Serve(l, nil)
 }

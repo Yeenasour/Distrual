@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/yeenasour/distrual/util/msg"
 	"io"
 	"os"
 	"os/exec"
@@ -70,8 +71,8 @@ func (h *Hub) StartNode(program string, args ...string) error {
 	h.AddNode(&n)
 
 	n.wg.Add(2)
-	go n.ScanPipe(n.stdout)
-	go n.ScanPipe(n.stderr)
+	go n.ScanStdout()
+	go n.ScanStderr()
 	go h.Wait(&n)
 
 	return nil
@@ -87,9 +88,21 @@ func (h *Hub) RemoveNode(nodeID int) error {
 	return nil
 }
 
-func (n *Node) ScanPipe(pipe io.ReadCloser) { // Will need refactor to pass output to parent through a channel
+func (n *Node) ScanStdout() {
 	defer n.wg.Done()
-	scanner := bufio.NewScanner(pipe)
+	scanner := bufio.NewScanner(n.stdout)
+	for scanner.Scan() {
+		m, _ := msg.DecodeMessage(scanner.Bytes())
+		switch m.Type {
+		case msg.Init:
+			fmt.Printf("Node %d initialized at port %s", n.id, m.Payload)
+		}
+	}
+}
+
+func (n *Node) ScanStderr() {
+	defer n.wg.Done()
+	scanner := bufio.NewScanner(n.stderr)
 	for scanner.Scan() {
 		fmt.Println(scanner.Text())
 	}
@@ -162,6 +175,8 @@ loop:
 			}
 			nodeID, _ := strconv.Atoi(command[1])
 			h.RemoveNode(nodeID)
+		case "killall":
+			h.ReapNodes()
 		case "list":
 			str := ""
 			for k := range h.nodes {
