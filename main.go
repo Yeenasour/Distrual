@@ -3,28 +3,14 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
-	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/yeenasour/distrual/util/event"
 )
-
-type Node struct {
-	id     int
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	stderr io.ReadCloser
-	ln     net.Listener
-	wg     sync.WaitGroup
-}
 
 type Hub struct {
 	nodes        map[int]*Node
@@ -108,60 +94,6 @@ func (h *Hub) RemoveNode(nodeID int) error {
 	return nil
 }
 
-func (n *Node) ScanStdout(eventChannel chan event.Event) {
-	defer n.wg.Done()
-	scanner := bufio.NewScanner(n.stdout)
-	for scanner.Scan() {
-		e, _ := event.DecodeEvent(scanner.Bytes())
-		eventChannel <- *e
-	}
-}
-
-func (n *Node) attachProxy(nodeAddr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", ":0")
-	if err != nil {
-		log.Println("Proxy error:", err)
-		return nil, err
-	}
-
-	n.ln = ln
-
-	go func() {
-		for {
-			clientConn, err := ln.Accept()
-			if err != nil {
-				log.Println("Incomming connection error:", err)
-				continue
-			}
-			go forwardConn(clientConn, nodeAddr)
-		}
-	}()
-
-	return ln, nil
-}
-
-func forwardConn(clientConn net.Conn, endpoint string) {
-	defer clientConn.Close()
-
-	nodeConn, err := net.Dial("tcp", endpoint)
-	if err != err {
-		log.Println("Couldn't connect to endpoint")
-		return
-	}
-	defer nodeConn.Close()
-
-	io.Copy(nodeConn, clientConn)
-	io.Copy(clientConn, nodeConn)
-}
-
-func (n *Node) ScanStderr() {
-	defer n.wg.Done()
-	scanner := bufio.NewScanner(n.stderr)
-	for scanner.Scan() {
-		fmt.Println(scanner.Text())
-	}
-}
-
 func (h *Hub) Wait(n *Node) {
 	ID := n.id
 	err := n.cmd.Wait()
@@ -177,32 +109,15 @@ func (h *Hub) Wait(n *Node) {
 	delete(h.nodes, ID)
 }
 
-func (n *Node) Kill() {
-	if n.cmd.Process != nil {
-		n.cmd.Process.Kill()
-	}
-	if n.ln != nil {
-		n.ln.Close()
-	}
-}
-
 func (h *Hub) EventHandler() {
 	for e := range h.eventChannel {
 		switch e.Type {
 		case event.Init:
 			fmt.Printf("Node %d initialized at port %s\n", e.NodeID, e.Payload)
-			ln, _ := h.nodes[e.NodeID].attachProxy(e.Payload.(string))
+			ln, _ := h.nodes[e.NodeID].AttachProxy(e.Payload.(string))
 			h.proxies[e.NodeID] = ln.Addr().String()
 		}
 	}
-}
-
-func (h *Hub) PrintProxies() {
-	fmt.Print("[ ")
-	for _, p := range h.proxies {
-		fmt.Printf("%s ", p)
-	}
-	fmt.Println("]")
 }
 
 func (h *Hub) CmdLine() {
@@ -255,13 +170,11 @@ loop:
 			h.ReapNodes()
 		case "list":
 			str := ""
-			for k := range h.nodes {
-				str += strconv.Itoa(k) + " "
+			for i, n := range h.nodes {
+				str += fmt.Sprintf("(%d - {%s, %s} )\n", i, n.ln.Addr().String(), h.proxies[i])
 			}
 			str += "\n"
 			fmt.Println(str)
-		case "proxies":
-			h.PrintProxies()
 		case "exit":
 			h.ReapNodes()
 			break loop
