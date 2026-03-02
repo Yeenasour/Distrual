@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/yeenasour/distrual/util/msg"
 	"io"
+	"log"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/yeenasour/distrual/util/event"
 )
 
 type Node struct {
@@ -18,28 +22,37 @@ type Node struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	stderr io.ReadCloser
+	ln     net.Listener
 	wg     sync.WaitGroup
 }
 
 type Hub struct {
-	nodes map[int]*Node
+	nodes        map[int]*Node
+	proxies      map[int]string
+	eventChannel chan event.Event
+	nextID       int
+	programDir   string
 }
 
 func HubInit() *Hub {
 	hub := Hub{
-		nodes: make(map[int]*Node),
+		nodes:        make(map[int]*Node),
+		proxies:      make(map[int]string),
+		eventChannel: make(chan event.Event, 10),
+		nextID:       0,
+		programDir:   ProgramDir(),
 	}
 	return &hub
 }
 
-func (h *Hub) AddNode(n *Node) {
-	for i := 0; i < 20; i++ {
-		if _, exists := h.nodes[i]; !exists {
-			n.id = i
-			h.nodes[i] = n
-			return
-		}
-	}
+func (h *Hub) AddNode(id int, n *Node) {
+	h.nodes[id] = n
+}
+
+func (h *Hub) generateID() int {
+	prev := h.nextID
+	h.nextID++
+	return prev
 }
 
 // Probably want to sanitize the path by forcing non-PATH executables from being executed on linux
@@ -50,7 +63,14 @@ func (h *Hub) StartNode(program string, args ...string) error {
 		return fmt.Errorf("Node limit (20) reached")
 	}
 
-	cmd := exec.Command(program, args...)
+	nodeID := h.generateID()
+
+	idArg := fmt.Sprintf("--id=%d", nodeID)
+	argsWithID := append([]string{idArg}, args...)
+
+	execPath := filepath.Join(h.programDir, program)
+
+	cmd := exec.Command(execPath, argsWithID...)
 
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
@@ -61,17 +81,17 @@ func (h *Hub) StartNode(program string, args ...string) error {
 	}
 
 	n := Node{
-		id:     -1, // Assigned by hub in AddNode
+		id:     nodeID,
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: stdout,
 		stderr: stderr,
 	}
 
-	h.AddNode(&n)
+	h.AddNode(nodeID, &n)
 
 	n.wg.Add(2)
-	go n.ScanStdout()
+	go n.ScanStdout(h.eventChannel)
 	go n.ScanStderr()
 	go h.Wait(&n)
 
@@ -81,23 +101,57 @@ func (h *Hub) StartNode(program string, args ...string) error {
 func (h *Hub) RemoveNode(nodeID int) error {
 	n, exists := h.nodes[nodeID]
 	if !exists {
-		fmt.Printf("No node with ID %d exists", nodeID)
+		fmt.Printf("No node with ID %d exists\n", nodeID)
 		return nil
 	}
 	n.Kill()
 	return nil
 }
 
-func (n *Node) ScanStdout() {
+func (n *Node) ScanStdout(eventChannel chan event.Event) {
 	defer n.wg.Done()
 	scanner := bufio.NewScanner(n.stdout)
 	for scanner.Scan() {
-		m, _ := msg.DecodeMessage(scanner.Bytes())
-		switch m.Type {
-		case msg.Init:
-			fmt.Printf("Node %d initialized at port %s", n.id, m.Payload)
-		}
+		e, _ := event.DecodeEvent(scanner.Bytes())
+		eventChannel <- *e
 	}
+}
+
+func (n *Node) attachProxy(nodeAddr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		log.Println("Proxy error:", err)
+		return nil, err
+	}
+
+	n.ln = ln
+
+	go func() {
+		for {
+			clientConn, err := ln.Accept()
+			if err != nil {
+				log.Println("Incomming connection error:", err)
+				continue
+			}
+			go forwardConn(clientConn, nodeAddr)
+		}
+	}()
+
+	return ln, nil
+}
+
+func forwardConn(clientConn net.Conn, endpoint string) {
+	defer clientConn.Close()
+
+	nodeConn, err := net.Dial("tcp", endpoint)
+	if err != err {
+		log.Println("Couldn't connect to endpoint")
+		return
+	}
+	defer nodeConn.Close()
+
+	io.Copy(nodeConn, clientConn)
+	io.Copy(clientConn, nodeConn)
 }
 
 func (n *Node) ScanStderr() {
@@ -119,14 +173,36 @@ func (h *Hub) Wait(n *Node) {
 		fmt.Printf("Node %d exited normally\n", ID)
 	}
 
+	delete(h.proxies, ID)
 	delete(h.nodes, ID)
 }
 
 func (n *Node) Kill() {
-	if n.cmd.Process == nil {
-		return
+	if n.cmd.Process != nil {
+		n.cmd.Process.Kill()
 	}
-	n.cmd.Process.Kill()
+	if n.ln != nil {
+		n.ln.Close()
+	}
+}
+
+func (h *Hub) EventHandler() {
+	for e := range h.eventChannel {
+		switch e.Type {
+		case event.Init:
+			fmt.Printf("Node %d initialized at port %s\n", e.NodeID, e.Payload)
+			ln, _ := h.nodes[e.NodeID].attachProxy(e.Payload.(string))
+			h.proxies[e.NodeID] = ln.Addr().String()
+		}
+	}
+}
+
+func (h *Hub) PrintProxies() {
+	fmt.Print("[ ")
+	for _, p := range h.proxies {
+		fmt.Printf("%s ", p)
+	}
+	fmt.Println("]")
 }
 
 func (h *Hub) CmdLine() {
@@ -184,6 +260,8 @@ loop:
 			}
 			str += "\n"
 			fmt.Println(str)
+		case "proxies":
+			h.PrintProxies()
 		case "exit":
 			h.ReapNodes()
 			break loop
@@ -202,7 +280,19 @@ func (h *Hub) ReapNodes() {
 	}
 }
 
+func ProgramDir() string {
+	rootDir, _ := os.Getwd()
+	/*exePath, err := os.Executable()
+	if err != nil {
+		log.Fatalln("failed to get executable path:", err)
+	}
+	rootDir := filepath.Dir(exePath)*/
+	path := filepath.Join(rootDir, "programs")
+	return path
+}
+
 func main() {
 	hub := HubInit()
+	go hub.EventHandler()
 	hub.CmdLine()
 }

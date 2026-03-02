@@ -1,26 +1,26 @@
-package msg
+package event
 
 import (
 	"encoding/json"
 	"os"
 )
 
-type MsgType int
+type EventType int
 
 const (
-	Event MsgType = iota
-	Init
+	Init EventType = iota
 	Snapshot
 	Command
 )
 
-type Message struct {
-	Type    MsgType
+type Event struct {
+	Type    EventType
+	NodeID  int
 	Payload interface{}
 }
 
-func WriteMessage(msg Message) error {
-	data, err := json.Marshal(msg)
+func WriteEvent(e Event) error {
+	data, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
@@ -29,8 +29,8 @@ func WriteMessage(msg Message) error {
 	return nil
 }
 
-func DecodeMessage(data []byte) (*Message, error) {
-	msg := Message{}
+func DecodeEvent(data []byte) (*Event, error) {
+	msg := Event{}
 	err := json.Unmarshal(data, &msg)
 	if err != nil {
 		return nil, err

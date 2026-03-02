@@ -2,8 +2,8 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
-	"github.com/yeenasour/distrual/util/msg"
 	"log"
 	"net"
 	"net/http"
@@ -11,9 +11,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/yeenasour/distrual/util/event"
 )
 
 type Node struct {
+	ID int
 }
 
 type ExampleArgs struct {
@@ -30,7 +33,10 @@ func (n *Node) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func main() {
-	node := Node{}
+	var id int
+	flag.IntVar(&id, "id", -1, "Assigned ID")
+	flag.Parse()
+	node := Node{ID: id}
 	node.server()
 	go node.readCommands()
 	for {
@@ -56,10 +62,11 @@ func (n *Node) server() {
 	if err != nil {
 		log.Fatal("listen error:", err)
 	}
-	m := msg.Message{
-		Type:    msg.Init,
+	m := event.Event{
+		Type:    event.Init,
+		NodeID:  n.ID,
 		Payload: l.Addr().String(),
 	}
-	msg.WriteMessage(m)
+	event.WriteEvent(m)
 	go http.Serve(l, nil)
 }
