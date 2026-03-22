@@ -169,12 +169,11 @@ func (h *Hub) ReapNodes() {
 }
 
 func ProgramDir() string {
-	rootDir, _ := os.Getwd()
-	/*exePath, err := os.Executable()
+	exePath, err := os.Executable()
 	if err != nil {
 		log.Fatalln("failed to get executable path:", err)
 	}
-	rootDir := filepath.Dir(exePath)*/
+	rootDir := filepath.Dir(exePath)
 	path := filepath.Join(rootDir, "programs")
 	return path
 }
