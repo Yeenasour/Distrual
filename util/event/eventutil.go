@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 )
 
@@ -27,6 +28,11 @@ func WriteEvent(e Event) error {
 	data = append(data, byte('\n'))
 	os.Stdout.Write(data)
 	return nil
+}
+
+func WriteOutput(format string, args ...any) {
+	str := fmt.Sprintf(format, args...)
+	os.Stderr.Write([]byte(str))
 }
 
 func DecodeEvent(data []byte) (*Event, error) {

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -12,23 +11,22 @@ import (
 	"strings"
 	"time"
 
+	//"github.com/yeenasour/distrual/util/commands"
 	"github.com/yeenasour/distrual/util/event"
 )
 
 type Node struct {
-	ID int
+	ID    int
+	Nodes map[int]string
 }
 
-type ExampleArgs struct {
-	X int
+type PingArgs struct {
 }
 
-type ExampleReply struct {
-	Y int
+type PingReply struct {
 }
 
-func (n *Node) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = 2 * args.X
+func (n *Node) Ping(args *PingArgs, reply *PingReply) error {
 	return nil
 }
 
@@ -51,7 +49,7 @@ func (n *Node) readCommands() {
 		if input == "" {
 			continue
 		}
-		fmt.Printf("Called with command %s\n", input)
+		event.WriteOutput("Called with command %s\n", input)
 	}
 }
 

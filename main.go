@@ -3,18 +3,19 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 
+	"github.com/yeenasour/distrual/util/commands"
 	"github.com/yeenasour/distrual/util/event"
 )
 
 type Hub struct {
 	nodes        map[int]*Node
-	proxies      map[int]string
+	proxies      map[int]*Proxy
 	eventChannel chan event.Event
 	nextID       int
 	programDir   string
@@ -23,7 +24,7 @@ type Hub struct {
 func HubInit() *Hub {
 	hub := Hub{
 		nodes:        make(map[int]*Node),
-		proxies:      make(map[int]string),
+		proxies:      make(map[int]*Proxy),
 		eventChannel: make(chan event.Event, 10),
 		nextID:       0,
 		programDir:   ProgramDir(),
@@ -105,6 +106,8 @@ func (h *Hub) Wait(n *Node) {
 		fmt.Printf("Node %d exited normally\n", ID)
 	}
 
+	h.proxies[ID].Close()
+
 	delete(h.proxies, ID)
 	delete(h.nodes, ID)
 }
@@ -114,8 +117,12 @@ func (h *Hub) EventHandler() {
 		switch e.Type {
 		case event.Init:
 			fmt.Printf("Node %d initialized at port %s\n", e.NodeID, e.Payload)
-			ln, _ := h.nodes[e.NodeID].AttachProxy(e.Payload.(string))
-			h.proxies[e.NodeID] = ln.Addr().String()
+			p, err := AttachProxy(e.Payload.(string))
+			if err != nil {
+				log.Println("Malformed init message: ", err)
+				h.nodes[e.NodeID].Kill()
+			}
+			h.proxies[e.NodeID] = p
 		}
 	}
 }
@@ -126,54 +133,58 @@ loop:
 	for {
 		fmt.Printf("> ")
 		input, _ := reader.ReadString('\n')
-		command := strings.Split(strings.TrimSpace(input), " ")
-		clen := len(command)
-		if clen == 0 {
+		command, args, err := commands.TrimSplitCommand(input)
+		if err != nil {
+			fmt.Println("Command error: ", err)
 			continue
 		}
-		switch command[0] {
-		case "example":
-			if clen != 3 {
+		arglen := len(args)
+		if command == "" {
+			continue
+		}
+		switch command {
+		case "ping":
+			if arglen != 2 {
 				fmt.Println("Wrong number of arguments")
 				continue
 			}
-			from, _ := strconv.Atoi(command[1])
-			to, _ := strconv.Atoi(command[2])
+			from, _ := strconv.Atoi(args[0])
+			to, _ := strconv.Atoi(args[1])
 			if !h.IsValidNodeID(from) || !h.IsValidNodeID(to) {
 				fmt.Println("Argument \"from\" or \"to\" outside valid range")
 				continue
 			}
-			fmt.Fprintf(h.nodes[from].stdin, "ExampleRPC to %d\n", to)
+			fmt.Fprintf(h.nodes[from].stdin, "ping %s\n", h.proxies[to].ln.Addr().String())
 		case "create":
-			if clen < 2 {
+			if arglen < 1 {
 				fmt.Println("Must provide at least a binary to run")
 				continue
 			}
-			fmt.Printf("Executable: %s - ", command[1])
+			fmt.Printf("Executable: %s - ", args[0])
 			fmt.Printf("Arguments: ")
-			for _, arg := range command[2:] {
+			for _, arg := range args[1:] {
 				fmt.Printf("%s ", arg)
 			}
 			fmt.Printf("\n")
-			err := h.StartNode(command[1], command[2:]...)
+			err := h.StartNode(args[0], args[1:]...)
 			if err != nil {
 				fmt.Printf("Failed to start process, %s\n", err)
 			}
 		case "kill":
-			if clen != 2 {
+			if arglen != 1 {
 				fmt.Println("Wrong number of arguments")
 				continue
 			}
-			nodeID, _ := strconv.Atoi(command[1])
+			nodeID, _ := strconv.Atoi(args[0])
 			h.RemoveNode(nodeID)
 		case "killall":
 			h.ReapNodes()
 		case "list":
 			str := ""
-			for i, n := range h.nodes {
-				str += fmt.Sprintf("(%d - {%s, %s} )\n", i, n.ln.Addr().String(), h.proxies[i])
+			for i := range h.nodes {
+				p := h.proxies[i]
+				str += fmt.Sprintf("(%d - {n - %s. p - %s} )\n", i, p.endpoint, p.ln.Addr().String())
 			}
-			str += "\n"
 			fmt.Println(str)
 		case "exit":
 			h.ReapNodes()
