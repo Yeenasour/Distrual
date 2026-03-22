@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 
 	"github.com/yeenasour/distrual/util/commands"
 	"github.com/yeenasour/distrual/util/event"
@@ -129,7 +128,6 @@ func (h *Hub) EventHandler() {
 
 func (h *Hub) CmdLine() {
 	reader := bufio.NewReader(os.Stdin)
-loop:
 	for {
 		fmt.Printf("> ")
 		input, _ := reader.ReadString('\n')
@@ -138,57 +136,23 @@ loop:
 			fmt.Println("Command error: ", err)
 			continue
 		}
-		arglen := len(args)
-		if command == "" {
+
+		handler, exists := handlers[command]
+		if !exists {
 			continue
 		}
-		switch command {
-		case "ping":
-			if arglen != 2 {
-				fmt.Println("Wrong number of arguments")
-				continue
-			}
-			from, _ := strconv.Atoi(args[0])
-			to, _ := strconv.Atoi(args[1])
-			if !h.IsValidNodeID(from) || !h.IsValidNodeID(to) {
-				fmt.Println("Argument \"from\" or \"to\" outside valid range")
-				continue
-			}
-			fmt.Fprintf(h.nodes[from].stdin, "ping %s\n", h.proxies[to].ln.Addr().String())
-		case "create":
-			if arglen < 1 {
-				fmt.Println("Must provide at least a binary to run")
-				continue
-			}
-			fmt.Printf("Executable: %s - ", args[0])
-			fmt.Printf("Arguments: ")
-			for _, arg := range args[1:] {
-				fmt.Printf("%s ", arg)
-			}
-			fmt.Printf("\n")
-			err := h.StartNode(args[0], args[1:]...)
-			if err != nil {
-				fmt.Printf("Failed to start process, %s\n", err)
-			}
-		case "kill":
-			if arglen != 1 {
-				fmt.Println("Wrong number of arguments")
-				continue
-			}
-			nodeID, _ := strconv.Atoi(args[0])
-			h.RemoveNode(nodeID)
-		case "killall":
-			h.ReapNodes()
-		case "list":
-			str := ""
-			for i := range h.nodes {
-				p := h.proxies[i]
-				str += fmt.Sprintf("(%d - {n - %s. p - %s} )\n", i, p.endpoint, p.ln.Addr().String())
-			}
-			fmt.Println(str)
-		case "exit":
-			h.ReapNodes()
-			break loop
+
+		res := handler(h, args)
+
+		if res.Error != nil {
+			fmt.Println("Error:", res.Error)
+		}
+		if res.Output != "" {
+			fmt.Println(res.Output)
+		}
+
+		if res.Done {
+			break
 		}
 	}
 }
